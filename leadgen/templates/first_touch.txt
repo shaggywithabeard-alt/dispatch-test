@@ -1,0 +1,14 @@
+Subject: Quick question about missed calls at {business_name}
+
+Hi {business_name} team,
+
+I'm {FROM_NAME} with {COMPANY_NAME}. We set up simple automations for {category} businesses in {city}: an AI receptionist that answers and books when you can't get to the phone, automatic text-back on missed calls, and follow-ups so leads don't slip through the cracks.
+
+Most owners we talk to don't know how many calls they miss after hours or during busy stretches. We can show you in a 15-minute call, no cost.
+
+I'll give you a ring in the next couple of days. If there's a better person or time to reach, just reply and let me know.
+
+Thanks,
+{FROM_NAME}
+{COMPANY_NAME}
+{FROM_PHONE}
