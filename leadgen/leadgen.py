@@ -73,6 +73,17 @@ CATEGORIES = {
     "contractor": [("craft", "builder"), ("office", "construction_company")],
 }
 
+# How each category reads in an email: "we work with {category} businesses".
+CATEGORY_LABELS = {
+    "dentist": "dental", "doctor": "medical", "chiropractor": "chiropractic",
+    "physical_therapy": "physical therapy", "veterinarian": "veterinary",
+    "hair_salon": "salon", "beauty_spa": "med spa and beauty", "hvac": "HVAC",
+    "auto_repair": "auto repair", "car_dealer": "car dealership",
+    "real_estate": "real estate", "property_management": "property management",
+    "lawyer": "law", "accountant": "accounting", "plumber": "plumbing",
+    "electrician": "electrical", "roofer": "roofing", "pest_control": "pest control",
+}
+
 DEFAULT_CATEGORIES = [
     "dentist", "chiropractor", "veterinarian", "hair_salon", "beauty_spa",
     "auto_repair", "real_estate", "lawyer", "plumber", "electrician", "hvac",
@@ -189,17 +200,36 @@ def element_to_row(element, categories, city):
     }
 
 
+def phone_key(phone):
+    digits = re.sub(r"\D", "", phone or "")
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def dedupe_keys(row):
+    """Same business from different sources: same lead id, phone, or website."""
+    keys = {"id:" + row["lead_id"]}
+    if phone_key(row.get("phone")):
+        keys.add("phone:" + phone_key(row["phone"]))
+    if row.get("website"):
+        keys.add("site:" + domain_of(row["website"]))
+    return keys
+
+
 def merge_rows(existing, new_rows):
     """Add new leads; fill blanks on known ones; never touch outreach status."""
-    by_id = {r["lead_id"]: r for r in existing}
+    index = {}
+    for r in existing:
+        for key in dedupe_keys(r):
+            index.setdefault(key, r)
     added = 0
     for new in new_rows:
-        old = by_id.get(new["lead_id"])
+        old = next((index[k] for k in dedupe_keys(new) if k in index), None)
         if old is None:
             row = {f: "" for f in FIELDS}
             row.update(new)
             existing.append(row)
-            by_id[row["lead_id"]] = row
+            for key in dedupe_keys(row):
+                index.setdefault(key, row)
             added += 1
         else:
             for key in ("phone", "email", "website", "address", "category"):
@@ -232,6 +262,30 @@ def cmd_find(args):
           f"{with_phone} with phone, {with_site} with website, {with_email} with email.")
     print(f"Saved to {args.out}")
     print("Next: python3 leadgen.py enrich --list " + args.out)
+
+
+def cmd_import(args):
+    """Merge any CSV with business_name + phone/email/website columns into a list."""
+    with open(args.file, newline="", encoding="utf-8-sig") as f:
+        incoming = list(csv.DictReader(f))
+    new_rows = []
+    for r in incoming:
+        name = (r.get("business_name") or r.get("name") or "").strip()
+        if not name:
+            continue
+        row = {k: (r.get(k) or "").strip() for k in
+               ("category", "phone", "email", "website", "address", "source")}
+        row["email"] = row["email"].lower()
+        row["business_name"] = name
+        row["city"] = args.city
+        row["source"] = row["source"] or args.source
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        row["lead_id"] = f"import-{slug}-{phone_key(row['phone'])[-4:]}"
+        new_rows.append(row)
+    rows = load_rows(args.list)
+    added = merge_rows(rows, new_rows)
+    save_rows(args.list, rows)
+    print(f"Imported {len(new_rows)} rows, {added} new. List now has {len(rows)}. Saved to {args.list}")
 
 
 # ---------------------------------------------------------------- enrich
@@ -344,7 +398,7 @@ def render(template, row, config):
     values = _Blank(config)
     values.update({
         "business_name": row["business_name"],
-        "category": row["category"].replace("_", " "),
+        "category": CATEGORY_LABELS.get(row["category"], row["category"].replace("_", " ")),
         "city": row["city"].split(",")[0].strip(),
     })
     return template.format_map(values)
@@ -429,7 +483,7 @@ def cmd_send(args):
 # ---------------------------------------------------------------- callsheet
 
 CALL_FIELDS = ["business_name", "category", "phone", "email", "website", "address",
-               "email_sent_at", "call_status", "call_notes"]
+               "email_status", "email_sent_at", "call_status", "call_notes"]
 
 
 def cmd_callsheet(args):
@@ -486,6 +540,13 @@ def main(argv=None):
     f.add_argument("--require-contact", action="store_true",
                    help="skip businesses with no phone, website, or email")
     f.set_defaults(func=cmd_find)
+
+    im = sub.add_parser("import", help="merge a CSV of businesses into a list")
+    im.add_argument("--file", required=True, help="CSV with business_name and phone/website/email")
+    im.add_argument("--list", required=True)
+    im.add_argument("--city", required=True)
+    im.add_argument("--source", default="import")
+    im.set_defaults(func=cmd_import)
 
     e = sub.add_parser("enrich", help="find contact emails on business websites")
     e.add_argument("--list", required=True)

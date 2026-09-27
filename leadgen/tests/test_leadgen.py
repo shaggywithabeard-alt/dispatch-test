@@ -47,6 +47,28 @@ class TestFind(unittest.TestCase):
         self.assertEqual(rows[0]["email_status"], "sent")
         self.assertEqual(rows[0]["call_notes"], "call back Tue")
 
+    def test_merge_dedupes_by_phone_and_website(self):
+        rows = []
+        leadgen.merge_rows(rows, [{"lead_id": "import-a", "business_name": "Bay Smiles",
+                                   "phone": "(850) 555-0100", "website": ""}])
+        osm = leadgen.element_to_row(OVERPASS_ELEMENTS[0], CATS, "PC")  # +1 850 555 0100
+        self.assertEqual(leadgen.merge_rows(rows, [osm]), 0)
+        self.assertEqual(rows[0]["website"], "https://baysmiles.com")  # blank filled in
+        other = {"lead_id": "x", "business_name": "Bay Smiles 2", "phone": "",
+                 "website": "http://www.baysmiles.com/contact"}
+        self.assertEqual(leadgen.merge_rows(rows, [other]), 0)
+
+    def test_import(self):
+        d = tempfile.mkdtemp()
+        src, lst = os.path.join(d, "in.csv"), os.path.join(d, "list.csv")
+        with open(src, "w") as f:
+            f.write("business_name,category,phone,email\nAcme HVAC,hvac,850-555-1234,A@Acme.com\n,,,\n")
+        leadgen.main(["import", "--file", src, "--list", lst, "--city", "Panama City, Florida"])
+        leadgen.main(["import", "--file", src, "--list", lst, "--city", "Panama City, Florida"])
+        rows = leadgen.load_rows(lst)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["email"], "a@acme.com")
+
     def test_query_uses_area(self):
         q = leadgen.build_overpass_query("area(id:3600001)", ["dentist"])
         self.assertIn('nwr["amenity"="dentist"]["name"](area.a);', q)
@@ -91,7 +113,7 @@ class TestSendAndCalls(unittest.TestCase):
         msg = leadgen.build_message(row, subject_t, body_t, CONFIG)
         self.assertEqual(msg["Subject"], "Quick question about missed calls at Biz 0")
         body = msg.get_content()
-        self.assertIn("dentist businesses in Panama City", body)
+        self.assertIn("dental businesses in Panama City", body)
         self.assertIn("1 Main St, Panama City, FL", body)
         self.assertIn("unsubscribe", body)
         self.assertIn("unsubscribe", msg["List-Unsubscribe"])

@@ -27,6 +27,21 @@ python3 leadgen.py find --city "Phoenix, Arizona" --out lists/phoenix.csv
   Coverage is good for names, phones and websites but thin on emails, so run step 2.
   For big cities, go one category at a time if the query times out.
 
+### Adding businesses from anywhere else
+
+If you have businesses from another source (a purchased list, a Google Maps
+export, your own notes), put them in a CSV with a `business_name` column plus
+any of `phone`, `email`, `website`, `address` and `category`. Then merge it in:
+
+```sh
+python3 leadgen.py import --file seeds/panama-city-fl-websearch.csv --list lists/panama-city-fl.csv --city "Panama City, Florida"
+```
+
+Businesses already on the list, matched by phone number or website, are
+skipped, so importing twice or overlapping with `find` never creates
+duplicates. `seeds/panama-city-fl-websearch.csv` is a starter list built by
+web search; check a number if a call doesn't connect.
+
 ## 2. Find emails on their websites
 
 ```sh
