@@ -88,6 +88,53 @@ class TestEnrich(unittest.TestCase):
         self.assertEqual(leadgen.pick_email([], "x.com"), "")
 
 
+GOOD_SITE = ("<meta name='viewport' content='width=device-width'>"
+             "<a href='tel:8505550100'>Call</a><form></form>"
+             "<script src='https://widget.podium.com/x.js'></script>"
+             "<a href='https://calendly.com/baysmiles'>Book online</a>"
+             + "<img src='a.jpg'>" * 6 +
+             "<a href='https://facebook.com/baysmiles'>fb</a> Testimonials &copy; 2026")
+WEAK_SITE = "<html><img src='logo.png'> Call us 850-555-0100. Copyright 2019</html>"
+
+
+class TestAudit(unittest.TestCase):
+    def test_good_site_has_no_gaps(self):
+        self.assertEqual(leadgen.audit_page("https://baysmiles.com/", GOOD_SITE, "dentist", 2026), [])
+
+    def test_weak_site(self):
+        gaps = leadgen.audit_page("http://oldsite.com/", WEAK_SITE, "dentist", 2026)
+        self.assertEqual(gaps, ["no_https", "not_mobile_friendly", "no_online_booking",
+                                "no_chat_or_text", "no_click_to_call", "no_contact_form",
+                                "outdated_site", "few_photos", "no_social_links",
+                                "no_reviews_shown"])
+        self.assertIn("(copyright 2019)", leadgen.describe_gaps(gaps, WEAK_SITE))
+        # Restaurants aren't flagged for lacking online booking.
+        self.assertNotIn("no_online_booking", leadgen.audit_page("http://x.com", WEAK_SITE, "restaurant", 2026))
+
+    def test_cmd_audit(self):
+        d = tempfile.mkdtemp()
+        lst = os.path.join(d, "l.csv")
+        rows = [dict.fromkeys(leadgen.FIELDS, "") for _ in range(3)]
+        rows[0].update(lead_id="a", business_name="No Site", category="hvac")
+        rows[1].update(lead_id="b", business_name="Weak", category="dentist", website="oldsite.com")
+        rows[2].update(lead_id="c", business_name="Down", category="dentist", website="down.com")
+        leadgen.save_rows(lst, rows)
+
+        def fake_fetch(url, timeout=None):
+            if "down" in url:
+                raise OSError("unreachable")
+            return "http://oldsite.com/", WEAK_SITE
+
+        with mock.patch.object(leadgen, "fetch", fake_fetch), mock.patch("time.sleep"):
+            leadgen.main(["audit", "--list", lst])
+        out = leadgen.load_rows(lst)
+        self.assertEqual(out[0]["gaps"], "no_website")
+        self.assertIn("no_online_booking", out[1]["gaps"])
+        self.assertIn("No online booking", out[1]["gap_notes"])
+        self.assertEqual(out[2]["gaps"], "site_down")
+        self.assertTrue(all(r["audited_at"] for r in out))
+
+
 class TestSendAndCalls(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -143,6 +190,10 @@ class TestSendAndCalls(unittest.TestCase):
         with open(out) as f:
             names = [r["business_name"] for r in csv.DictReader(f)]
         self.assertEqual(names, ["Biz 3"])  # emailed long ago, not called
+        leadgen.main(["callsheet", "--list", self.list, "--out", out, "--include-unemailed"])
+        with open(out) as f:
+            names = [r["business_name"] for r in csv.DictReader(f)]
+        self.assertEqual(names, ["Biz 3", "Biz 0", "Biz 1"])  # DNC Biz 2 never listed
 
     def test_missing_address_blocks_send(self):
         with open(self.config, "w") as f:

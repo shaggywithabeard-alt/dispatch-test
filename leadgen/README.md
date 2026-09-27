@@ -52,6 +52,30 @@ This visits each business's website (home page, then /contact and /about) and
 saves the best public email it finds. It prefers addresses on the business's
 own domain, such as info@ or office@.
 
+## 2b. Note what each business is missing
+
+```sh
+python3 leadgen.py audit --list lists/panama-city-fl.csv
+```
+
+This checks each business's website and writes what it lacks into the `gaps`
+and `gap_notes` columns, which also appear on the call sheet:
+- no website, or a site that won't load
+- not secure (no HTTPS), or not built for phones
+- no online booking (for appointment-based businesses)
+- no chat or text-us option, so after-hours leads can only leave a voicemail
+- phone number not tap-to-call; no contact form
+- outdated site (old copyright year), very few photos
+- no social links, no reviews shown
+
+Other columns for your own findings:
+- `research_notes`: anything found by hand or web search, such as hours,
+  review counts or complaints.
+- `after_hours_call`: call after closing time and write what happens:
+  `voicemail`, `voicemail full`, `no answer`, `answering service` or `AI`. A
+  business sending callers to voicemail is the strongest lead for an AI
+  receptionist.
+
 ## 3. Send the first-touch email
 
 1. Copy `config.example.env` to `config.env` and fill it in.
@@ -78,7 +102,9 @@ python3 leadgen.py callsheet --list lists/panama-city-fl.csv
 
 This writes `lists/panama-city-fl-calls.csv`: everyone emailed 2 or more days
 ago who hasn't been called yet (change the gap with `--days`). Add
-`--include-unemailed` to also include businesses that have a phone but no email.
+`--include-unemailed` to also include businesses that haven't been emailed yet.
+Each row carries the gap and research notes, so you know the angle before
+dialing.
 
 Log each call in the **main** list in Excel or Google Sheets:
 - `call_status`, e.g. `no answer`, `callback`, `meeting booked` or `not interested`

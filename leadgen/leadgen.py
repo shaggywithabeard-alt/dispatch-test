@@ -38,8 +38,9 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
 FIELDS = [
-    "lead_id", "business_name", "category", "phone", "email", "website",
-    "address", "city", "source",
+    "lead_id", "business_name", "category", "phone",
+    "gaps", "gap_notes", "research_notes", "after_hours_call",
+    "email", "website", "address", "city", "source", "audited_at",
     "email_status", "email_sent_at", "email_error",
     "call_status", "call_notes", "do_not_contact",
 ]
@@ -122,14 +123,19 @@ def is_yes(value):
 
 # ---------------------------------------------------------------- HTTP
 
-def http_get(url, params=None, data=None, timeout=60):
+def fetch(url, params=None, data=None, timeout=60):
+    """Return (final URL after redirects, page text)."""
     if params:
         url = url + "?" + urllib.parse.urlencode(params)
     body = urllib.parse.urlencode(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
-        return resp.read(2_000_000).decode(charset, errors="replace")
+        return resp.geturl(), resp.read(2_000_000).decode(charset, errors="replace")
+
+
+def http_get(url, params=None, data=None, timeout=60):
+    return fetch(url, params, data, timeout)[1]
 
 
 # ---------------------------------------------------------------- find
@@ -360,6 +366,118 @@ def cmd_enrich(args):
     print(f"Added {found} emails. Saved to {args.list}")
 
 
+# ---------------------------------------------------------------- audit
+
+# Businesses that live on booked appointments or service calls; for these a
+# missing online-booking option is a real gap. Restaurants/bars are left out.
+BOOKS_APPOINTMENTS = {
+    "dentist", "doctor", "chiropractor", "physical_therapy", "veterinarian",
+    "hair_salon", "beauty_spa", "gym", "auto_repair", "hvac", "plumber",
+    "electrician", "roofer", "contractor", "pest_control", "lawyer",
+    "accountant", "insurance", "real_estate", "property_management",
+}
+
+BOOKING_RE = re.compile(
+    r"calendly|acuityscheduling|zocdoc|vagaro|booksy|mindbody|schedulicity|setmore|"
+    r"squareup\.com/appointments|square\.site|housecallpro|servicetitan|jobber|"
+    r"nexhealth|localmed|solutionreach|weave|flex\.dental|petdesk|vetstoria|"
+    r"opentable|resy\.com|exploretock|"
+    r"book (now|online|an appointment|appointment)|schedule (now|online|service|an appointment)|"
+    r"request an appointment|book a (call|consultation|service)", re.I)
+CHAT_RE = re.compile(
+    r"intercom|drift\.com|tawk\.to|livechat|podium|birdeye|olark|zendesk|tidio|"
+    r"crisp\.chat|smith\.ai|hs-scripts|leadconnector|gohighlevel|chat with us|text us|"
+    r"webchat|sms:", re.I)
+TEL_RE = re.compile(r"""href=["']tel:""", re.I)
+FORM_RE = re.compile(r"<form", re.I)
+VIEWPORT_RE = re.compile(r"""<meta[^>]+name=["']viewport""", re.I)
+COPYRIGHT_RE = re.compile(r"(?:©|&copy;|copyright)\s*(?:\d{4}\s*[-–]\s*)?((?:19|20)\d{2})", re.I)
+IMG_RE = re.compile(r"<img\b", re.I)
+SOCIAL_RE = re.compile(r"facebook\.com/|instagram\.com/", re.I)
+REVIEWS_RE = re.compile(r"testimonial|reviews|what our (clients|customers|patients) say", re.I)
+
+GAP_TEXT = {
+    "no_website": "No website on file: sell a site with booking and an AI receptionist",
+    "site_down": "Website didn't load",
+    "no_https": "Site not secure (no HTTPS), so browsers warn visitors",
+    "not_mobile_friendly": "Site not built for phones",
+    "no_online_booking": "No online booking: every appointment needs a phone call",
+    "no_chat_or_text": "No chat or text-us: after-hours leads can only leave a voicemail",
+    "no_click_to_call": "Phone number isn't tap-to-call on mobile",
+    "no_contact_form": "No contact form",
+    "outdated_site": "Site looks outdated",
+    "few_photos": "Very few photos on the site",
+    "no_social_links": "No social media links on the site",
+    "no_reviews_shown": "No reviews or testimonials shown",
+}
+
+
+def audit_page(final_url, page, category, year=None):
+    """Return the list of gap tags for a fetched homepage."""
+    year = year or dt.date.today().year
+    gaps = []
+    if not final_url.lower().startswith("https://"):
+        gaps.append("no_https")
+    if not VIEWPORT_RE.search(page):
+        gaps.append("not_mobile_friendly")
+    if category in BOOKS_APPOINTMENTS and not BOOKING_RE.search(page):
+        gaps.append("no_online_booking")
+    if not CHAT_RE.search(page):
+        gaps.append("no_chat_or_text")
+    if not TEL_RE.search(page):
+        gaps.append("no_click_to_call")
+    if not FORM_RE.search(page) and "mailto:" not in page.lower():
+        gaps.append("no_contact_form")
+    years = [int(y) for y in COPYRIGHT_RE.findall(page)]
+    if years and max(years) <= year - 3:
+        gaps.append("outdated_site")
+    if len(IMG_RE.findall(page)) < 5:
+        gaps.append("few_photos")
+    if not SOCIAL_RE.search(page):
+        gaps.append("no_social_links")
+    if not REVIEWS_RE.search(page):
+        gaps.append("no_reviews_shown")
+    return gaps
+
+
+def describe_gaps(gaps, page=""):
+    notes = []
+    for gap in gaps:
+        text = GAP_TEXT[gap]
+        if gap == "outdated_site":
+            text += f" (copyright {max(COPYRIGHT_RE.findall(page))})"
+        notes.append(text)
+    return "; ".join(notes)
+
+
+def cmd_audit(args):
+    rows = load_rows(args.list)
+    todo = [r for r in rows if (args.force or not r["audited_at"]) and not is_yes(r["do_not_contact"])]
+    if args.limit:
+        todo = todo[: args.limit]
+    print(f"Auditing {len(todo)} businesses...")
+    for i, row in enumerate(todo, 1):
+        if not row["website"]:
+            gaps, page = ["no_website"], ""
+        else:
+            url = row["website"] if "//" in row["website"] else "http://" + row["website"]
+            try:
+                final_url, page = fetch(url, timeout=20)
+                gaps = audit_page(final_url, page, row["category"])
+            except (urllib.error.URLError, OSError, ValueError):
+                gaps, page = ["site_down"], ""
+        row["gaps"] = ";".join(gaps)
+        row["gap_notes"] = describe_gaps(gaps, page)
+        row["audited_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        print(f"  [{i}/{len(todo)}] {row['business_name']}: {row['gaps'] or 'no gaps found'}")
+        if i % 10 == 0:
+            save_rows(args.list, rows)
+        if row["website"]:
+            time.sleep(args.delay)
+    save_rows(args.list, rows)
+    print(f"Saved to {args.list}. Gap notes are also on the call sheet.")
+
+
 # ---------------------------------------------------------------- send
 
 def load_config(path):
@@ -482,7 +600,8 @@ def cmd_send(args):
 
 # ---------------------------------------------------------------- callsheet
 
-CALL_FIELDS = ["business_name", "category", "phone", "email", "website", "address",
+CALL_FIELDS = ["business_name", "category", "phone", "gap_notes", "research_notes",
+               "after_hours_call", "email", "website", "address",
                "email_status", "email_sent_at", "call_status", "call_notes"]
 
 
@@ -496,7 +615,7 @@ def cmd_callsheet(args):
         if r["email_status"] == "sent":
             if dt.datetime.fromisoformat(r["email_sent_at"]) <= cutoff:
                 due.append(r)
-        elif args.include_unemailed and not r["email"]:
+        elif args.include_unemailed and not r["email_status"]:
             due.append(r)
     due.sort(key=lambda r: r["email_sent_at"] or "9999")
     out = args.out or args.list.replace(".csv", "") + "-calls.csv"
@@ -554,6 +673,13 @@ def main(argv=None):
     e.add_argument("--delay", type=float, default=1.0, help="seconds between sites")
     e.set_defaults(func=cmd_enrich)
 
+    a = sub.add_parser("audit", help="check each website and note what the business is missing")
+    a.add_argument("--list", required=True)
+    a.add_argument("--limit", type=int, default=0)
+    a.add_argument("--delay", type=float, default=1.0, help="seconds between sites")
+    a.add_argument("--force", action="store_true", help="re-check businesses already audited")
+    a.set_defaults(func=cmd_audit)
+
     s = sub.add_parser("send", help="send the first-touch email (dry run by default)")
     s.add_argument("--list", required=True)
     s.add_argument("--template", default=os.path.join(HERE, "templates", "first_touch.txt"))
@@ -569,7 +695,7 @@ def main(argv=None):
     c.add_argument("--list", required=True)
     c.add_argument("--days", type=int, default=2, help="call N+ days after the email")
     c.add_argument("--include-unemailed", action="store_true",
-                   help="also include businesses with a phone but no email")
+                   help="also include businesses not emailed yet")
     c.add_argument("--out")
     c.set_defaults(func=cmd_callsheet)
 
