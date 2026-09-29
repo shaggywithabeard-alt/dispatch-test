@@ -94,6 +94,21 @@ The script:
 - Always adds your company name, postal address and an unsubscribe line to the
   bottom, and won't run if those are missing.
 
+### Sending through the Gmail connector (cloud sessions)
+
+When direct mail-server access is blocked, the emails go out through the Gmail
+connector instead. Claude writes the day's batch, sends each one, and records it:
+
+```sh
+python3 leadgen.py outbox --list lists/panama-city-fl.csv --limit 25   # writes outbox.json
+python3 leadgen.py mark --list lists/panama-city-fl.csv --status sent <lead_id> ...
+python3 leadgen.py mark --list lists/panama-city-fl.csv --status bounced --error "reason" <lead_id>
+python3 leadgen.py mark --list lists/panama-city-fl.csv --status do_not_contact <lead_id>
+```
+
+The same rules apply as with `send`: nobody is emailed twice, do-not-contact is
+respected, and the address and unsubscribe footer are always included.
+
 ## 4. Call them
 
 ```sh

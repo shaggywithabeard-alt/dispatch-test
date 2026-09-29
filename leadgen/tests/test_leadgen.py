@@ -184,6 +184,26 @@ class TestSendAndCalls(unittest.TestCase):
             leadgen.main(["send", "--list", self.list, "--config", self.config, "--send"])
         smtp2.assert_not_called()
 
+    def test_outbox_then_mark(self):
+        out = os.path.join(self.dir, "outbox.json")
+        leadgen.main(["outbox", "--list", self.list, "--config", self.config, "--out", out])
+        with open(out) as f:
+            outbox = __import__("json").load(f)
+        self.assertEqual([m["to"] for m in outbox], ["b0@biz0.com", "b1@biz1.com"])
+        self.assertIn("unsubscribe", outbox[0]["body"])
+        self.assertIn("1 Main St", outbox[0]["body"])
+        leadgen.main(["mark", "--list", self.list, "--status", "sent", "id0"])
+        leadgen.main(["mark", "--list", self.list, "--status", "bounced", "--error", "no such user", "id1"])
+        rows = leadgen.load_rows(self.list)
+        self.assertEqual(rows[0]["email_status"], "sent")
+        self.assertTrue(rows[0]["email_sent_at"])
+        self.assertEqual(rows[1]["email_status"], "bounced")
+        leadgen.main(["outbox", "--list", self.list, "--config", self.config, "--out", out])
+        with open(out) as f:
+            self.assertEqual(__import__("json").load(f), [])
+        with self.assertRaises(SystemExit):
+            leadgen.main(["mark", "--list", self.list, "--status", "sent", "nope"])
+
     def test_callsheet(self):
         out = os.path.join(self.dir, "calls.csv")
         leadgen.main(["callsheet", "--list", self.list, "--out", out])

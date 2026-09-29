@@ -548,6 +548,53 @@ def build_message(row, subject_t, body_t, config):
     return msg
 
 
+def email_queue(rows, args):
+    queue = [r for r in rows if eligible_for_email(r)]
+    if args.category:
+        queue = [r for r in queue if r["category"] == args.category]
+    return queue[: args.limit]
+
+
+def cmd_outbox(args):
+    """Write today's emails to JSON for sending through another channel
+    (e.g. a Gmail connector). Record each one afterwards with `mark`."""
+    config = load_config(args.config)
+    missing = [k for k in REQUIRED_CONFIG if not config.get(k)]
+    if missing:
+        sys.exit(f"Missing in {args.config}: {', '.join(missing)} (see config.example.env)")
+    with open(args.template, encoding="utf-8") as f:
+        subject_t, body_t = parse_template(f.read())
+    queue = email_queue(load_rows(args.list), args)
+    outbox = []
+    for row in queue:
+        msg = build_message(row, subject_t, body_t, config)
+        outbox.append({"lead_id": row["lead_id"], "business_name": row["business_name"],
+                       "to": msg["To"], "subject": msg["Subject"], "body": msg.get_content()})
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(outbox, f, indent=2)
+    print(f"{len(outbox)} emails written to {args.out}")
+
+
+def cmd_mark(args):
+    """Record the outcome for leads by lead_id (after sending via outbox)."""
+    rows = load_rows(args.list)
+    by_id = {r["lead_id"]: r for r in rows}
+    unknown = [i for i in args.ids if i not in by_id]
+    if unknown:
+        sys.exit(f"Unknown lead ids: {', '.join(unknown)}")
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    for lead_id in args.ids:
+        row = by_id[lead_id]
+        if args.status == "do_not_contact":
+            row["do_not_contact"] = "yes"
+        else:
+            row["email_status"] = args.status
+            row["email_sent_at"] = now if args.status == "sent" else row["email_sent_at"]
+            row["email_error"] = args.error or ""
+    save_rows(args.list, rows)
+    print(f"Marked {len(args.ids)} as {args.status}. Saved to {args.list}")
+
+
 def cmd_send(args):
     config = load_config(args.config)
     missing = [k for k in REQUIRED_CONFIG + (REQUIRED_SMTP if args.send else []) if not config.get(k)]
@@ -556,10 +603,7 @@ def cmd_send(args):
     with open(args.template, encoding="utf-8") as f:
         subject_t, body_t = parse_template(f.read())
     rows = load_rows(args.list)
-    queue = [r for r in rows if eligible_for_email(r)]
-    if args.category:
-        queue = [r for r in queue if r["category"] == args.category]
-    queue = queue[: args.limit]
+    queue = email_queue(rows, args)
     if not queue:
         print("Nobody left to email (needs an email, not yet emailed, not do-not-contact).")
         return
@@ -690,6 +734,22 @@ def main(argv=None):
     s.add_argument("--max-delay", type=float, default=120)
     s.add_argument("--send", action="store_true", help="actually send")
     s.set_defaults(func=cmd_send)
+
+    o = sub.add_parser("outbox", help="write today's emails to JSON for sending elsewhere")
+    o.add_argument("--list", required=True)
+    o.add_argument("--template", default=os.path.join(HERE, "templates", "first_touch.txt"))
+    o.add_argument("--config", default=os.path.join(HERE, "config.env"))
+    o.add_argument("--limit", type=int, default=25)
+    o.add_argument("--category")
+    o.add_argument("--out", default="outbox.json")
+    o.set_defaults(func=cmd_outbox)
+
+    m = sub.add_parser("mark", help="record sent / bounced / do-not-contact by lead_id")
+    m.add_argument("--list", required=True)
+    m.add_argument("--status", required=True, choices=["sent", "bounced", "do_not_contact"])
+    m.add_argument("--error", help="bounce reason")
+    m.add_argument("ids", nargs="+", help="lead_id values")
+    m.set_defaults(func=cmd_mark)
 
     c = sub.add_parser("callsheet", help="export who to call next")
     c.add_argument("--list", required=True)
