@@ -88,6 +88,9 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); out
 .big-tag::after { content: ""; position: absolute; right: 18px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; background: var(--surface); }
 .big-tag b { display: block; font-family: var(--display); font-weight: 800; font-size: 3rem; line-height: 1; font-variant-numeric: tabular-nums; }
 .lookup-result .hist { width: 100%; text-align: left; }
+.worth { font-family: var(--mono); font-size: 0.8rem; font-weight: 500; color: var(--plus-ink); margin-top: 4px; }
+.worth-big { display: grid; gap: 2px; }
+.worth-big b { font-family: var(--display); font-size: 1.5rem; font-weight: 800; color: var(--plus-ink); }
 .confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--minus); color: var(--minus-ink); padding: 8px 10px; border-radius: 9px; font-size: 0.85rem; }
 @media (prefers-reduced-motion: reduce) { .adds button:active { transform: none; } }
 @media (max-width: 380px) { .adds button { font-size: 0.85rem; } }
@@ -115,7 +118,9 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); out
         <div class="stats">
           <div class="stat"><b class="num" id="stat-count">0</b><span class="muted">customers</span></div>
           <div class="stat"><b class="num" id="stat-points">0</b><span class="muted">points outstanding</span></div>
+          <div class="stat"><b class="num" id="stat-dollars">$0</b><span class="muted">in discounts owed</span></div>
         </div>
+        <p class="muted rule" style="margin:0">Every 100 points = $10 off. Partial points carry over.</p>
         <form id="add-form" class="row" autocomplete="off">
           <label for="new-name">New customer name<input id="new-name" placeholder="e.g. Marcus Hill" required maxlength="60"></label>
           <button class="btn tag" type="submit">Add customer</button>
@@ -132,7 +137,7 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); out
   <section id="lookup" class="panel">
     <div>
       <h2>Check your points</h2>
-      <p class="muted" style="margin:4px 0 0">Enter your customer number or your full name.</p>
+      <p class="muted" style="margin:4px 0 0">Enter your customer number or your full name. Every 100 points gets you $10 off your next purchase.</p>
     </div>
     <form id="lookup-form" class="row" autocomplete="off">
       <label for="lookup-q">Customer # or name<input id="lookup-q" placeholder="e.g. 1004" required maxlength="60"></label>
@@ -146,6 +151,10 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); out
 <script>
 const ADD_STEPS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const HIST_MAX = 40;
+// Discount rule: every 100 points is worth $10 off.
+const BLOCK_POINTS = 100, BLOCK_DOLLARS = 10;
+const dollarsOff = (pts) => Math.floor((pts || 0) / BLOCK_POINTS) * BLOCK_DOLLARS;
+const toNextBlock = (pts) => BLOCK_POINTS - ((pts || 0) % BLOCK_POINTS);
 const $ = (id) => document.getElementById(id);
 
 let db = null, isOwner = false;
@@ -199,7 +208,9 @@ $("tab-lookup").addEventListener("click", () => showTab("lookup"));
 
 /* ---------- Owner: rendering ---------- */
 function renderStats() {
-  let total = 0; for (const c of customers.values()) total += c.points || 0;
+  let total = 0, owed = 0;
+  for (const c of customers.values()) { total += c.points || 0; owed += dollarsOff(c.points); }
+  $("stat-dollars").textContent = "$" + owed.toLocaleString();
   $("stat-count").textContent = customers.size;
   $("stat-points").textContent = total.toLocaleString();
 }
@@ -232,10 +243,13 @@ function card(c) {
       el("div", {},
         el("div", { class: "cname", text: c.name }),
         el("span", { class: "badge", text: "#" + c.number })),
-      el("div", { class: "pts" }, el("b", { text: (c.points || 0).toLocaleString() }), el("span", { text: "points" }))),
+      el("div", { class: "pts" }, el("b", { text: (c.points || 0).toLocaleString() }), el("span", { text: "points" }),
+        el("div", { class: "worth", text: "$" + dollarsOff(c.points) + " off" }))),
     el("div", { class: "adds", role: "group", "aria-label": "Add points to " + c.name },
       ...ADD_STEPS.map((n) => el("button", { type: "button", text: "+" + n, onclick: () => change(c.number, n) }))),
     el("div", { class: "redeem" },
+      el("button", { class: "btn tag", type: "button", text: "Use $" + BLOCK_DOLLARS + " off (−" + BLOCK_POINTS + ")",
+        disabled: (c.points || 0) < BLOCK_POINTS, onclick: () => change(c.number, -BLOCK_POINTS, "$" + BLOCK_DOLLARS + " discount") }),
       redeemInput,
       el("button", { class: "btn danger", type: "button", text: "Redeem", onclick: () => {
         const n = Math.floor(Number(redeemInput.value));
@@ -329,6 +343,9 @@ $("lookup-form").addEventListener("submit", async (e) => {
       out.replaceChildren(el("div", { class: "lookup-result" },
         el("div", {}, el("div", { class: "cname", text: c.name }), el("span", { class: "badge", text: "#" + c.number })),
         el("div", { class: "big-tag" }, el("b", { text: (c.points || 0).toLocaleString() }), el("span", { class: "eyebrow", style: "color:inherit", text: "points available" })),
+        el("div", { class: "worth-big" },
+          el("b", { text: dollarsOff(c.points) ? "$" + dollarsOff(c.points) + " off" : "No discount yet" }),
+          el("span", { class: "muted", text: toNextBlock(c.points) + " more points until your next $" + BLOCK_DOLLARS + " off" })),
         el("div", { style: "width:100%" }, el("div", { class: "eyebrow", text: "Recent activity", style: "margin-bottom:6px;text-align:left" }), histList(c.history, 8))));
     }
   } catch (err) {
